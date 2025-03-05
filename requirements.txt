@@ -1,0 +1,6 @@
+beautifulsoup4==4.9.3
+requests==2.31.0
+schedule==1.1.0
+pywhatkit==5.3
+urllib3==1.26.18
+charset-normalizer==2.0.12 
