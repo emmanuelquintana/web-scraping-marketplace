@@ -21,75 +21,150 @@ class U4UBot:
     def __init__(self, accounts, phone_number):
         self.accounts = accounts  # Lista de diccionarios con información de las cuentas
         self.phone_number = phone_number  # Guardamos el número de teléfono
+        
         self.previous_discounts = {}  # Ahora guardará los descuentos por cuenta
         logging.info(f"Bot iniciado con {len(accounts)} cuentas y número {phone_number}")
 
     def get_product_info(self, account):
+        logging.info(f"Obteniendo información de productos para la cuenta: {account['name']}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'es-ES,es;q=0.9'
+        }
+        
         try:
-            logging.info(f"Intentando obtener información de productos para {account['name']}...")
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'es-MX,es;q=0.8,en-US;q=0.5,en;q=0.3',
-            }
             response = requests.get(account['url'], headers=headers)
-            logging.info(f"Respuesta del servidor: {response.status_code}")
-            
+            response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             products = []
             
-            # Buscar todos los productos
-            items = soup.find_all('div', {'class': ['ui-search-result__wrapper', 'andes-card']})
-            
-            logging.info(f"Productos encontrados: {len(items)}")
-            
-            for item in items:
-                try:
-                    # Buscar el título del producto
-                    title_elem = item.find(['h2', 'h3'], {'class': ['ui-search-item__title', 'poly-component__title']})
-                    if not title_elem:
-                        title_elem = item.find('a', {'class': 'poly-component__title'})
-                    
-                    if title_elem:
-                        title = title_elem.text.strip() if isinstance(title_elem, BeautifulSoup) else title_elem.text.strip()
-                        logging.info(f"Procesando producto: {title}")
-                        
-                        # Buscar precios
-                        original_price_elem = item.find('s', {'class': ['andes-money-amount--previous', 'price-tag-amount']})
-                        current_price_elem = item.find('span', {'class': ['andes-money-amount--cents-superscript', 'price-tag-amount']})
-                        
-                        if original_price_elem and current_price_elem:
-                            original_fraction = original_price_elem.find('span', {'class': ['andes-money-amount__fraction', 'price-tag-fraction']})
-                            current_fraction = current_price_elem.find('span', {'class': ['andes-money-amount__fraction', 'price-tag-fraction']})
-                            
-                            if original_fraction and current_fraction:
-                                original_price = original_fraction.text.strip()
-                                current_price = current_fraction.text.strip()
-                                
-                                # Limpiar y convertir precios a números
-                                try:
-                                    original = float(re.sub(r'[^\d.]', '', original_price))
-                                    current = float(re.sub(r'[^\d.]', '', current_price))
-                                    
-                                    if original > 0:  # Evitar división por cero
-                                        discount = round(((original - current) / original) * 100, 2)
-                                        
-                                        products.append({
-                                            'title': title,
-                                            'discount': discount,
-                                            'original_price': str(original),
-                                            'current_price': str(current)
-                                        })
-                                        logging.info(f"Producto procesado: {title} con descuento de {discount}%")
-                                except ValueError as ve:
-                                    logging.error(f"Error convirtiendo precios para {title}: {str(ve)}")
+            # Detectar la plataforma basada en la URL
+            if 'shein.com' in account['url'] or 'shein.mx' in account['url']:
+                # Lógica para SHEIN
+                items = soup.find_all('section', class_='product-card')
+                logging.info(f"Encontrados {len(items)} productos en SHEIN")
                 
-                except Exception as e:
-                    logging.error(f"Error procesando producto individual: {str(e)}")
+                for item in items:
+                    try:
+                        title_elem = item.find('a', class_='goods-title-link')
+                        title = title_elem.get_text().strip() if title_elem else "Sin título"
+                        
+                        # Obtener precio original y con descuento
+                        price_wrapper = item.find('div', class_='product-card__price')
+                        if price_wrapper:
+                            current_price_elem = price_wrapper.find('span', class_='normal-price-ctn__sale-price')
+                            current_price = current_price_elem.get_text().strip() if current_price_elem else "0"
+                            
+                            # Buscar el descuento
+                            discount_elem = item.find('span', class_='discount-text')
+                            if discount_elem:
+                                discount = discount_elem.get_text().strip()
+                                # Convertir el descuento de texto (ej: "-71%") a número
+                                discount = int(discount.strip('-%'))
+                                # Calcular el precio original
+                                current_price_num = float(current_price.replace('$MXN', '').replace(',', '').strip())
+                                original_price = current_price_num / (1 - discount/100)
+                            else:
+                                original_price = float(current_price.replace('$MXN', '').replace(',', '').strip())
+                                discount = 0
+                            
+                            product_url = title_elem['href'] if title_elem else ""
+                            if not product_url.startswith('http'):
+                                product_url = f"https://www.shein.com{product_url}"
+                            
+                            products.append({
+                                'title': title,
+                                'original_price': original_price,
+                                'current_price': current_price_num,
+                                'discount': discount,
+                                'url': product_url
+                            })
+                    except Exception as e:
+                        logging.error(f"Error procesando producto de SHEIN: {str(e)}")
+                        continue
+                    
+            elif 'mercadolibre' in account['url']:
+                # Lógica existente para Mercado Libre
+                items = soup.find_all(['div', 'li'], class_=['ui-search-layout__item', 'ui-search-result'])
+                logging.info(f"Encontrados {len(items)} productos en Mercado Libre")
+                
+                for item in items:
+                    try:
+                        title_elem = item.find(['h2', 'h3'], class_='ui-search-item__title')
+                        title = title_elem.text.strip() if title_elem else "Sin título"
+                        
+                        price_elem = item.find('span', class_=['price-tag-amount', 'price-tag-fraction'])
+                        current_price = float(price_elem.text.replace('$', '').replace(',', '')) if price_elem else 0
+                        
+                        original_price_elem = item.find('span', class_='ui-search-price__second-line')
+                        original_price = current_price
+                        if original_price_elem:
+                            price_text = original_price_elem.find('span', class_=['price-tag-amount', 'price-tag-fraction'])
+                            if price_text:
+                                original_price = float(price_text.text.replace('$', '').replace(',', ''))
+                        
+                        url_elem = item.find('a', class_='ui-search-item__group__element')
+                        product_url = url_elem['href'] if url_elem else ""
+                        
+                        discount = round(((original_price - current_price) / original_price) * 100) if original_price > current_price else 0
+                        
+                        products.append({
+                            'title': title,
+                            'original_price': original_price,
+                            'current_price': current_price,
+                            'discount': discount,
+                            'url': product_url
+                        })
+                    except Exception as e:
+                        logging.error(f"Error procesando producto de Mercado Libre: {str(e)}")
+                        continue
+                    
+            elif 'amazon' in account['url']:
+                # Lógica existente para Amazon
+                items = soup.find_all('div', {'data-component-type': 's-search-result'})
+                logging.info(f"Encontrados {len(items)} productos en Amazon")
+                
+                for item in items:
+                    try:
+                        title_elem = item.find('h2', class_='a-size-mini')
+                        title = title_elem.text.strip() if title_elem else "Sin título"
+                        
+                        price_elem = item.find('span', class_='a-price')
+                        current_price = 0
+                        if price_elem:
+                            price_text = price_elem.find('span', class_='a-offscreen')
+                            if price_text:
+                                current_price = float(price_text.text.replace('$', '').replace(',', ''))
+                        
+                        original_price_elem = item.find('span', class_='a-text-price')
+                        original_price = current_price
+                        if original_price_elem:
+                            price_text = original_price_elem.find('span', class_='a-offscreen')
+                            if price_text:
+                                original_price = float(price_text.text.replace('$', '').replace(',', ''))
+                        
+                        url_elem = item.find('a', class_='a-link-normal')
+                        product_url = f"https://www.amazon.com.mx{url_elem['href']}" if url_elem else ""
+                        
+                        discount = round(((original_price - current_price) / original_price) * 100) if original_price > current_price else 0
+                        
+                        products.append({
+                            'title': title,
+                            'original_price': original_price,
+                            'current_price': current_price,
+                            'discount': discount,
+                            'url': product_url
+                        })
+                    except Exception as e:
+                        logging.error(f"Error procesando producto de Amazon: {str(e)}")
+                        continue
             
+            logging.info(f"Total de productos encontrados: {len(products)}")
             return products
+            
         except Exception as e:
-            logging.error(f"Error al obtener información: {str(e)}", exc_info=True)
+            logging.error(f"Error al obtener productos: {str(e)}")
             return []
 
     def get_amazon_products(self, url):
@@ -106,6 +181,8 @@ class U4UBot:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             products = []
+            
+
             
             # Buscar productos de Amazon
             items = soup.find_all('div', {'data-component-type': 's-search-result'})
@@ -156,6 +233,87 @@ class U4UBot:
             logging.error(f"Error al obtener información de Amazon: {str(e)}", exc_info=True)
             return []
 
+    def get_shein_products(self, url):
+        try:
+            logging.info("Intentando obtener información de productos de Shein...")
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'es-MX,es;q=0.8,en-US;q=0.5,en;q=0.3',
+                'Connection': 'keep-alive',
+            }
+            response = requests.get(url, headers=headers)
+            logging.info(f"Respuesta del servidor Shein: {response.status_code}")
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            products = []
+            
+            # Determinar si es Pure and Simple o Grupo Maquilero por la URL
+            is_pure_and_simple = 'store_code=7833912084' in url
+            
+            # Buscar productos según el tipo de tienda
+            if is_pure_and_simple:
+                items = soup.find_all('section', {'class': 'product-card', 'role': 'listitem'})
+            else:
+                items = soup.find_all('section', {'class': 'product-card'})
+            
+            logging.info(f"Productos encontrados: {len(items)}")
+            
+            for item in items:
+                try:
+                    # Obtener el título según el tipo de tienda
+                    if is_pure_and_simple:
+                        title_elem = item.find('a', {'class': 'goods-title-link'})
+                        if title_elem:
+                            title = title_elem.text.strip()
+                            # Limpiar el título para quitar la parte de colores al final
+                            if '|' in title:
+                                title = title.split('|')[0].strip()
+                    else:
+                        title_elem = item.find('a', {'class': 'goods-title-link'})
+                        if title_elem:
+                            title = title_elem.text.strip()
+                    
+                    if title_elem:
+                        # Buscar el descuento
+                        discount_elem = item.find('span', {'class': 'discount-text'})
+                        if discount_elem:
+                            discount_text = discount_elem.text.strip()
+                            discount = float(re.sub(r'[^\d.]', '', discount_text))
+                            
+                            # Buscar precio actual
+                            current_price_elem = item.find('span', {'class': 'normal-price-ctn__sale-price'})
+                            if current_price_elem:
+                                price_span = current_price_elem.find('span')
+                                if price_span:
+                                    price_text = price_span.text.strip()
+                                    # Limpiar el texto del precio (quitar MXN y espacios)
+                                    current_price = re.sub(r'[^\d.]', '', price_text.replace('MXN', ''))
+                                    
+                                    # Convertir a números y calcular precio original
+                                    try:
+                                        current = float(current_price)
+                                        original = round(current / (1 - discount/100), 2)
+                                        
+                                        products.append({
+                                            'title': title,
+                                            'discount': discount,
+                                            'original_price': str(original),
+                                            'current_price': str(current)
+                                        })
+                                        logging.info(f"Producto Shein encontrado: {title} con descuento de {discount}%")
+                                    except ValueError as ve:
+                                        logging.error(f"Error convirtiendo precios para {title}: {str(ve)}")
+                
+                except Exception as e:
+                    logging.error(f"Error procesando producto Shein individual: {str(e)}")
+            
+            logging.info(f"Total de productos encontrados en Shein: {len(products)}")
+            return products
+        except Exception as e:
+            logging.error(f"Error al obtener información de Shein: {str(e)}", exc_info=True)
+            return []
+
     def send_whatsapp_message(self, message):
         try:
             logging.info("Intentando enviar mensaje consolidado")
@@ -186,7 +344,12 @@ class U4UBot:
         
         # Verificar productos
         for account in self.accounts:
-            products = self.get_product_info(account) if account['platform'] == 'MercadoLibre' else self.get_amazon_products(account['url'])
+            if account['platform'] == 'MercadoLibre':
+                products = self.get_product_info(account)
+            elif account['platform'] == 'Amazon':
+                products = self.get_amazon_products(account['url'])
+            else:  # Shein
+                products = self.get_shein_products(account['url'])
             
             if not products:
                 logging.warning(f"No se encontraron productos para {account['name']}")
@@ -288,6 +451,16 @@ def main():
                 'name': 'U4U Amazon Store',
                 'url': 'https://www.amazon.com.mx/s?k=u4u+uniformes&crid=7HLPL67JZQDM&sprefix=U4U+UNIFOEM%2Caps%2C131&ref=nb_sb_ss_mvt-t9-ranker_1_11',
                 'platform': 'Amazon'
+            },
+            {
+                'name': 'U4U Shein Grupo Maquilero',
+                'url': 'https://www.shein.com.mx/Brands/U4U-Uniforms-sc-0141887884.html',
+                'platform': 'Shein'
+            },
+            {
+                'name': 'U4U Shein Pure and Simple',
+                'url': 'https://www.shein.com.mx/store/home?store_code=7833912084',
+                'platform': 'Shein'
             }
         ]
         
@@ -312,3 +485,5 @@ def main():
 
 if __name__ == "__main__":
     main() 
+
+    
